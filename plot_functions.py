@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-@author: felix
-please don't modify existing functions without consulting me!
+@author: Felix
 """
 
 
