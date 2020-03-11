@@ -1,26 +1,35 @@
 
-"""
-Intensity Plots for CF
-"""
-
-
 import numpy as np
 from numpy import genfromtxt
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import os
+from numpy.ma import masked_invalid
+from matplotlib.colors import LogNorm
 import scipy
 from scipy import stats as stat
 from scipy import sparse
+import statsmodels.sandbox.stats.multicomp as multicomp
 import time
+import csv
 
-def process_K(LF_file, datafolder, datafile, N_LF, N_HF,zmax=0.04,                      
+
+
+
+'''        FUNCTIONS     '''
+
+
+
+
+
+def process_K(LF_file, datafolder, datafile, N_LF, N_HF,zmax=0.04,                      # is this pacman-specific????
               CM=plt.cm.YlOrRd,figsize=[18,8]):
     
     LF_matrix = genfromtxt(LF_file, delimiter=';')
     freqs = list(LF_matrix[1:,1])
     freqs = [round(f,3) for f in freqs]    
+    #freqsinv=freqs[::-1]
     LF_matrix = LF_matrix[1:,2:]
     LF_matrix[np.isnan(LF_matrix)]=0
     
@@ -86,9 +95,15 @@ def process_K(LF_file, datafolder, datafile, N_LF, N_HF,zmax=0.04,
 
 
 
-def K_stats_PS(masked_data,surr_data,sign_z,metric='PLV'):                 # metric either 'PLV' or 'iPLV', or 'wPLI' 
+def K_stats_PS_2(masked_data,surr_data,sign_z,metric='PLV'):                 # metric either 'PLV' or 'iPLV', or 'wPLI' 
 
-    stats  = stats_PS(0)
+    ''' computes the stats for a PS interaction matrix
+     Note: this function assumes that all elements with value 0 are masked out.
+     Values on diagonal are set to 0 before computation.
+     '''
+
+
+    stats  = Stats_PS(0)
     data   = Bunch()
     N_CH   = len(masked_data)      
     
@@ -145,9 +160,9 @@ def K_stats_PS(masked_data,surr_data,sign_z,metric='PLV'):                 # met
 
 
 
-def K_stats_CFC(masked_data,surr_data,sign_z,LF_PS=None,HF_PS=None):    # for a single ratio. no masks here!
+def K_stats_CFC_2(masked_data,surr_data,sign_z,LF_PS=None,HF_PS=None):    # for a single ratio. no masks here!
 
-    stats  = stats_CFC(0)
+    stats  = Stats_CFC(0)
     data   = Bunch()
     N_CH   = len(masked_data)  
      
@@ -251,10 +266,47 @@ def K_stats_CFC(masked_data,surr_data,sign_z,LF_PS=None,HF_PS=None):    # for a 
                 
 
 
+def combined_matrix(freqs,LFs,HFs,subject,ratio,freq_idx,PS,CFC,f_HF=1,f_CF=1,binary=0):
+    
+
+    LF       = freqs[freq_idx]
+    LF_ind   = (list(LFs)).index(LF)
+    HF       = HFs[LF_ind][ratio]
+    HF_in_freqs_ind  = (list(freqs)).index(HF)   
+    
+    
+    PS_low  = PS[subject][freq_idx]
+    PS_high = PS[subject][HF_in_freqs_ind]
+    
+    N_CH    = int(PS_low.N_CH)
+       
+    matrix = np.zeros([N_CH*2,N_CH*2])
+    
+    matrix[0:N_CH,0:N_CH] = PS_low.data_sign
+    
+    matrix[N_CH:N_CH*2,N_CH:N_CH*2] = PS_high.data_sign*f_HF
+    
+    # one of these need flipping - which one?
+    
+    matrix[N_CH:N_CH*2,0:N_CH] = CFC[subject][LF_ind][ratio].data_sign*f_CF
+    matrix[0:N_CH,N_CH:N_CH*2] = np.transpose(CFC[subject][LF_ind][ratio].data_sign*f_CF)
+    
+    print('LF = ' + str(LF) + ', HF = ' + str(HF))
+    
+    if binary:
+        matrix = (matrix >0)
+    
+    plt.imshow(matrix,origin='bottom')
+
+
+    return matrix
 
 
 
-def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dist,CFC_layer,parc,channel_layers):
+
+
+
+def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,parc,channel_layers):
     N = Bunch()    
     edges = Bunch()
     if parc == 'parc2009':
@@ -268,20 +320,24 @@ def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dis
     N.freq  = len(freqs) 
     N.subj  = len(subjects)
     N.ratios = len(CFC[0][0])
-    N.dist_bins = len(CFC_dist[0][0][0])
-    N.layer_int = len(CFC_layer[0][0][0])
+#    N.dist_bins = len(CFC_dist[0][0][0])
+#    N.layer_int = len(CFC_layer[0][0][0])
     N.layer     = 3
     N.network   = 7
     N.chan_per_parc_subj       = np.zeros([N.subj,N.parcel],'int')                                    # +1 to have a bin for masked channels     
     edges.N_pot_pp_subj      = np.zeros([N.subj,N.parcel,N.parcel],'int') 
-    edges.N_pot_ppd_subj     = np.zeros([N.dist_bins,N.subj,N.parcel,N.parcel],'int') 
-    edges.N_pot_ppl_subj     = np.zeros([N.layer_int,N.subj,N.parcel,N.parcel],'int')     
+#    edges.N_pot_ppd_subj     = np.zeros([N.dist_bins,N.subj,N.parcel,N.parcel],'int') 
+#    edges.N_pot_ppl_subj     = np.zeros([N.layer_int,N.subj,N.parcel,N.parcel],'int')     
     edges.metric_PS_pp       = np.zeros([N.freq,N.parcel,N.parcel])  
     edges.PLV_CF_pp_all      = [[[[[] for b in range(N.parcel)] for i in range(N.parcel)] for j in range(N.ratios)] for k in range(N.LF)]
     edges.PLV_CF_pp_all_TP   = [[[[[] for b in range(N.parcel)] for i in range(N.parcel)] for j in range(N.ratios)] for k in range(N.LF)]
+   # edges.PLV_CF_ppd         = np.zeros([N.LF,N.ratios,N.dist_bins,N.parcel,N.parcel]) 
     edges.N_sign_PS_pp       = np.zeros([N.freq,N.parcel,N.parcel],'int')
     edges.N_sign_CF_pp       = np.zeros([N.LF,N.ratios,N.parcel,N.parcel],'int')   
     edges.N_sign_CF_pp_mod   = np.zeros([N.LF,N.ratios,N.parcel,N.parcel],'int') 
+    #edges.N_sign_CF_ppd      = np.zeros([N.LF,N.ratios,N.dist_bins,N.parcel,N.parcel],'int')
+    #edges.N_sign_CF_ppl      = np.zeros([N.LF,N.ratios,N.layer_int,N.parcel,N.parcel],'int')    
+    #edges.PLV_CF_ppl_subj    = np.zeros([N.LF,N.ratios,N.layer_int,N.subj,N.parcel,N.parcel])        # tends to give memory error!!!!!
     edges.N_sign_local_pp    = np.zeros([N.LF,N.ratios,N.parcel])
     edges.N_sign_local_pl    = np.zeros([N.LF,N.ratios,N.layer])
     edges.PLV_local_pp       = np.zeros([N.LF,N.ratios,N.parcel])
@@ -291,17 +347,17 @@ def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dis
     np.fill_diagonal(diag_zero_mask_parc,0)    
     diag_zero_mask = [None for i in subjects]
     
-    morph_filename0   = directory + '_support files\\morph 256 to 200.csv'                                       # get the morphing from 254 parcels to 200 parcels
+    morph_filename0   = directory + '_settings\\morph 256 to 200.csv'                                       # get the morphing from 254 parcels to 200 parcels
     morph_no_dummies  = np.genfromtxt(morph_filename0, delimiter=';')[:,1].astype('int')    
     
     for s,subject in enumerate(subjects): 
         diag_zero_mask[s] = np.ones([ch_per_subject[s],ch_per_subject[s]])
         np.fill_diagonal(diag_zero_mask[s],0)
         
-        mask_filename    = directory + '_support files\\masks\\' + subject + '.csv'
+        mask_filename    = directory + '_settings\\masks FINAL\\' + subject + '.csv'
         mask             = np.genfromtxt(mask_filename, delimiter=';')   
         ch_mask          = np.sum(mask,0)>0    
-        morph_filename1  = directory + '_support files\\morphing OPs\\' + subject + ' ' + parc + ' val1.csv'
+        morph_filename1  = directory + '_settings\\morphing OPs FINAL\\' + subject + ' ' + parc + ' val1.csv'
         morphing_targ_T  = np.genfromtxt(morph_filename1, delimiter=';')[:,0].astype('int')
         
         if parc   == 'parc2018yeo7_200':
@@ -323,20 +379,20 @@ def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dis
         ME  = CFC[s][0][0].data_masked * diag_zero_mask[s]                         #### count possible edges per parcel pair ####
         MT  = np.matmul(MM,(ME>0))
         edges.N_pot_pp_subj[s] += np.transpose(np.matmul(MM,np.transpose(MT)))
-        
-        for d in range(N.dist_bins):                                               #### count possible edges per parcel pair in dist. bin ####
-            ME  = CFC_dist[s][0][0][d].data_masked * diag_zero_mask[s]             
-            MT  = np.matmul(MM,(ME>0))
-            edges.N_pot_ppd_subj[d,s] += np.transpose(np.matmul(MM,np.transpose(MT)))    
-           
-        for l in range(N.layer_int):                                               #### count possible edges per parcel pair in layer interaction ####
-            try:
-                ME  = CFC_layer[s][0][0][l].data_masked * diag_zero_mask[s]            
-                MT  = np.matmul(MM,(ME>0))
-                edges.N_pot_ppl_subj[l,s] += np.transpose(np.matmul(MM,np.transpose(MT)))
-            except: 
-                print('empty layer in subject ' + subject)   
-                   
+#        
+#        for d in range(N.dist_bins):                                               #### count possible edges per parcel pair in dist. bin ####
+#            ME  = CFC_dist[s][0][0][d].data_masked * diag_zero_mask[s]             
+#            MT  = np.matmul(MM,(ME>0))
+#            edges.N_pot_ppd_subj[d,s] += np.transpose(np.matmul(MM,np.transpose(MT)))    
+#           
+#        for l in range(N.layer_int):                                               #### count possible edges per parcel pair in layer interaction ####
+#            try:
+#                ME  = CFC_layer[s][0][0][l].data_masked * diag_zero_mask[s]            
+#                MT  = np.matmul(MM,(ME>0))
+#                edges.N_pot_ppl_subj[l,s] += np.transpose(np.matmul(MM,np.transpose(MT)))
+#            except: 
+#                print('empty layer in subject ' + subject)   
+#                   
         for f,freq in enumerate(freqs):                                            #### PS: get PLV & sign. edges per parcel pair ####
             data_masked    = PS[s][f].data_masked * diag_zero_mask[s]
             MT             = np.matmul(MM,data_masked)
@@ -346,7 +402,9 @@ def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dis
             MT           = np.matmul(MM,(data_sign>0))
             edges.N_sign_PS_pp[f,:,:] += np.transpose(np.matmul(MM,np.transpose(MT)))        
                     
-        for lf,LF in enumerate(LFs):                                               #### get sign CFC edges per parcel pair ####
+        
+        try:
+          for lf,LF in enumerate(LFs):                                               #### get sign CFC edges per parcel pair ####
             for hf,HF in enumerate(HFs[lf]):   
                 data_local      = np.diagonal(CFC[s][lf][hf].data_masked)
                 data_local_sign = np.diagonal(CFC[s][lf][hf].data_sign)
@@ -393,8 +451,8 @@ def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dis
 #                        dataSL = CFC_layer[s][lf][hf][l].data_sign * diag_zero_mask[s]                  
 #                        MT = np.matmul(MM,(dataSL>0))  
 #                        edges.N_sign_CF_ppl[lf,hf,l,:,:] += np.transpose(np.matmul(MM,np.transpose(MT)))                                                 
-#                except:
-                   # pass 
+        except:
+              pass 
         
         print(time.strftime("%Y-%m-%d %H:%M") + '          ' + subject)
     
@@ -404,8 +462,8 @@ def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dis
         N.parcel=148
         
     edges.N_pot_pp_subj      = edges.N_pot_pp_subj[:,:N.parcel,:N.parcel] 
-    edges.N_pot_ppd_subj     = edges.N_pot_ppd_subj[:,:,:N.parcel,:N.parcel]
-    edges.N_pot_ppl_subj     = edges.N_pot_ppl_subj[:,:,:N.parcel,:N.parcel]    
+#    edges.N_pot_ppd_subj     = edges.N_pot_ppd_subj[:,:,:N.parcel,:N.parcel]
+#    edges.N_pot_ppl_subj     = edges.N_pot_ppl_subj[:,:,:N.parcel,:N.parcel]    
     edges.metric_PS_pp       = edges.metric_PS_pp[:,:N.parcel,:N.parcel]   
     edges.N_sign_PS_pp       = edges.N_sign_PS_pp[:,:N.parcel,:N.parcel]
     edges.N_sign_CF_pp       = edges.N_sign_CF_pp[:,:,:N.parcel,:N.parcel]        
@@ -413,10 +471,14 @@ def edge_counting(directory,subjects,ch_per_subject,freqs,LFs,HFs,PS,CFC,CFC_dis
     edges.PLV_local_pp       = edges.PLV_local_pp[:,:,:N.parcel]
     edges.N_sign_local_pp    = edges.N_sign_local_pp[:,:,:N.parcel]
     N.chan_per_parc_subj     = [a[:N.parcel] for a in N.chan_per_parc_subj]    
+    # edges.N_sign_CF_ppd      = edges.N_sign_CF_ppd[:,:,:,:N.parcel,:N.parcel]
+    # edges.N_sign_CF_ppl      = edges.N_sign_CF_ppl[:,:,:,:N.parcel,:N.parcel]        
+    # edges.PLV_CF_ppd         = edges.PLV_CF_ppd[:,:,:,:N.parcel,:N.parcel] 
+    # edges.PLV_CF_ppl_subj    = edges.PLV_CF_ppl_subj[:,:,:,:,:N.parcel,:N.parcel]  
     
     edges.N_pot_pp  = np.sum(edges.N_pot_pp_subj,0)
-    edges.N_pot_ppd = np.sum(edges.N_pot_ppd_subj,0)
-    edges.N_pot_ppl = np.sum(edges.N_pot_ppl_subj,0)
+#    edges.N_pot_ppd = np.sum(edges.N_pot_ppd_subj,0)
+#    edges.N_pot_ppl = np.sum(edges.N_pot_ppl_subj,0)
 
     return N, edges    
        
@@ -426,10 +488,10 @@ def low_to_high_analysis(edges,N,LFs,HFs,alpha,N_perm,parc,directory,networks,N_
   
     if parc == 'parc2009':
         N.parcel = 148
-        file_networks   = '_support_files\\networks parc2009.csv'
+        file_networks   = 'M:\\SEEG_Morlet\\_RAW_line_filtered\\_settings\\networks parc2009.csv'
     if parc =='parc2018yeo7_200':
         N.parcel = 200
-        file_networks   = '_support_files\\networks parc2018yeo7_200.csv'
+        file_networks   = 'M:\\SEEG_Morlet\\_RAW_line_filtered\\_settings\\networks parc2018yeo7_200.csv'
     network_indices = np.array(np.genfromtxt(file_networks, delimiter=';'),'int')
     
     lh = Bunch()
@@ -533,7 +595,12 @@ def low_to_high_threshold(lh,N,N_min,networks):
     lh.N_pot_LH    = np.sum(lh.N_pot_LH_pp*(lh.N_el_pot_LH_pp>N_min)  ,(2,3))
     lh.K_LH        = lh.N_LH_sig/lh.N_pot_LH    
     lh.N_LH_sig    = np.sum(lh.V_LH_sig_pp>0,(2,3))
-    lh.K_LH_pn     = lh.N_LH_sig_pn/lh.N_pot_LH_pn     
+    lh.K_LH_pn     = lh.N_LH_sig_pn/lh.N_pot_LH_pn 
+    
+   # lh.out_degree        = np.nanmean(lh.V_LH_sig_pp>0, 2)
+   # lh.in_degree         = np.nanmean(lh.V_LH_sig_pp>0, 3)
+ #   lh.out_degree = np.nanmean(((lh.V_LH_sig_pp>0)/lh.N_el_pot_LH_pp),2)
+ #   lh.in_degree  = np.nanmean(((lh.V_LH_sig_pp>0)/lh.N_el_pot_LH_pp),3)
     lh.out_degree = np.nansum(lh.V_LH_sig_pp>0,2)/np.nansum(lh.N_el_pot_LH_pp,2)
     lh.in_degree  = np.nansum(lh.V_LH_sig_pp>0,3)/np.nansum(lh.N_el_pot_LH_pp,3)
 
@@ -660,7 +727,7 @@ def peak_finder(freqs,values,fmin=2,fmax=20):
 
 def write_csv_low_to_high(directory,lh,ratios2,parc,CF_type,add_inf=''):
     
-    write_dir = directory + '_results\\graph metrics\\' + CF_type + ' LH '+ parc + add_inf 
+    write_dir = directory + '_results\\graph metrics 2018-05\\' + CF_type + ' LH '+ parc + add_inf 
     if not os.path.exists(write_dir):
         os.makedirs(write_dir)
         
@@ -715,7 +782,7 @@ def analyze_PS(N,edges,networks,N_ch_layer):
 
 def write_csv_local(directory,edges,ratios2,parc,CF_type,add_inf=''):
     
-    write_dir = directory + '_results\\graph metrics\\' + CF_type + ' local '+ parc + add_inf   
+    write_dir = directory + '_results\\graph metrics 2018-05\\' + CF_type + ' local '+ parc + add_inf   
     if not os.path.exists(write_dir):
         os.makedirs(write_dir)
         
@@ -766,7 +833,7 @@ def degree_analysis(edges,N,networks):
 
 def write_degrees(directory,D,ratios2,parc, CF_type, add_inf=''):    
 
-    write_dir = directory + '_results\\graph metrics\\' + CF_type + ' degrees '+ parc + add_inf  
+    write_dir = directory + '_results\\graph metrics 2018-05\\' + CF_type + ' degrees '+ parc + add_inf  
     if not os.path.exists(write_dir):
         os.makedirs(write_dir)
         
@@ -789,25 +856,7 @@ def write_degrees(directory,D,ratios2,parc, CF_type, add_inf=''):
  
 
 
-
-
-
-def read_complex_data_from_csv(filename_base,delimiter=';'):
-
-    filename_RE = filename_base + '_re.csv'
-    filename_IM = filename_base + '_im.csv'
-    data_re     = np.genfromtxt(filename_RE, delimiter=';')
-    data_im     = np.genfromtxt(filename_IM, delimiter=';')
-    data        = data_re + 1j*data_im
-    return data
-                      
-
-
-
-
-
-
-
+'''   CLASSES   '''
 
 
                 
@@ -822,7 +871,7 @@ class DataB:
         self.data_masked = np.full([N_CH,N_CH],val)
         self.data_sign   = np.full([N_CH,N_CH],val)  
                     
-class stats_PS:
+class Stats_PS:
     def __init__(self,val):
         self.mean_masked = val
         self.mean_sign   = val
@@ -831,7 +880,7 @@ class stats_PS:
         self.N_pot       = val
         self.degree      = val        
                 
-class stats_CFC:
+class Stats_CFC:
     def __init__(self,val):
         self.mean_masked   = val
         self.mean_sign     = val
@@ -868,6 +917,61 @@ class stats_CFC:
         self.strength_LF_excl = val
         self.strength_HF_excl = val
                 
+                    
+class Stats_CFS:                             # here for backwards compatibility
+    def __init__(self,val):
+        self.mean_masked   = val
+        self.mean_sign     = val
+        self.mean_mod      = val 
+        self.mean_excl     = val
+        self.mean_local    = val
+
+        self.N             = val       
+        self.N_mod         = val
+        self.N_excl        = val
+        self.N_local       = val
+
+        self.K             = val
+        self.K_mod         = val
+        self.K_excl        = val 
+        self.K_local       = val        
+
+        self.N_pot         = val  
+        self.N_pot_mod     = val   
+        self.N_pot_excl    = val   
+        self.N_CH          = val
+
+        self.degree_LF      = val        
+        self.degree_HF      = val
+        self.degree_LF_mod  = val        
+        self.degree_HF_mod  = val
+        self.degree_LF_excl = val
+        self.degree_HF_excl = val        
+
+        self.strength         = val
+        self.strength         = val
+        self.strength_LF_mod  = val
+        self.strength_HF_mod  = val
+        self.strength_LF_excl = val
+        self.strength_HF_excl = val
+                               
                 
-                
-                
+   
+    
+def get_morph_sources(morph_file = 'K:\\palva\\Resting_state\\RS_CF_MEG\\_settings\\morphing sources 200 to 148.csv'):
+    morph_sources = []
+    with open(morph_file, 'rb') as csvfile:
+         spamreader = csv.reader(csvfile, delimiter=';')
+         for row in spamreader:
+             morph_sources.append(row)
+    morph_sources = [[int(i) for i in j] for j in morph_sources]
+    return morph_sources       
+        
+    
+    
+    
+
+
+
+
+
